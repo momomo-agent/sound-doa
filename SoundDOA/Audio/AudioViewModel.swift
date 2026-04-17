@@ -49,48 +49,47 @@ final class AudioViewModel: ObservableObject {
             return
         }
 
-        let session = AVAudioSession.sharedInstance()
-
+        // Don't explicitly request permission — AVAudioEngine.start()
+        // implicitly triggers the iOS permission dialog on first mic access.
         do {
+            let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
-            try session.setActive(true)
 
-            // Try to select stereo input
+            // Try to select stereo input (front mic + stereo polar pattern)
             if let inputs = session.availableInputs,
                let port = inputs.first,
-               let sources = port.dataSources {
-                if let front = sources.first(where: { $0.dataSourceName == "Front" }) {
-                    try port.setPreferredDataSource(front)
-                    if front.supportedPolarPatterns?.contains(.stereo) == true {
-                        try front.setPreferredPolarPattern(.stereo)
-                    }
+               let sources = port.dataSources,
+               let front = sources.first(where: { $0.dataSourceName == "Front" }) {
+                try port.setPreferredDataSource(front)
+                if front.supportedPolarPatterns?.contains(.stereo) == true {
+                    try front.setPreferredPolarPattern(.stereo)
                 }
             }
 
             try session.setPreferredSampleRate(16000)
             try session.setPreferredInputNumberOfChannels(2)
+            try session.setActive(true)
 
-            let engine = AVAudioEngine()
-            self.engine = engine
-            let input = engine.inputNode
+            let eng = AVAudioEngine()
+            self.engine = eng
+            let input = eng.inputNode
             let format = input.inputFormat(forBus: 0)
 
             guard format.channelCount >= 1 else {
-                errorMessage = "No input channels"
+                errorMessage = "No input channels available"
                 return
             }
 
-            print("[SoundDOA] Input format: \(format.channelCount)ch @ \(format.sampleRate)Hz")
+            print("[SoundDOA] Input: \(format.channelCount)ch @ \(format.sampleRate)Hz")
 
-            input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
-                self?.handleBuffer(buffer)
+            input.installTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in
+                self.handleBuffer(buffer)
             }
 
-            try engine.start()
+            try eng.start()
             isRunning = true
-            print("[SoundDOA] Audio engine started")
+            print("[SoundDOA] Engine started")
 
-            // Process at ~20fps
             updateTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
                 self?.processBuffer()
             }
@@ -122,13 +121,13 @@ final class AudioViewModel: ObservableObject {
     private func handleBuffer(_ buffer: AVAudioPCMBuffer) {
         let frames = Int(buffer.frameLength)
         let channels = Int(buffer.format.channelCount)
-        guard frames > 0, let channelData = buffer.floatChannelData else { return }
+        guard frames > 0, let ch = buffer.floatChannelData else { return }
 
         if channels >= 2 {
-            latestLeft = Array(UnsafeBufferPointer(start: channelData[0], count: frames))
-            latestRight = Array(UnsafeBufferPointer(start: channelData[1], count: frames))
+            latestLeft = Array(UnsafeBufferPointer(start: ch[0], count: frames))
+            latestRight = Array(UnsafeBufferPointer(start: ch[1], count: frames))
         } else {
-            let mono = Array(UnsafeBufferPointer(start: channelData[0], count: frames))
+            let mono = Array(UnsafeBufferPointer(start: ch[0], count: frames))
             latestLeft = mono
             latestRight = mono
         }
@@ -146,21 +145,19 @@ final class AudioViewModel: ObservableObject {
         case .ild:
             result = ildProcessor?.process(left: left, right: right) ?? .zero
         }
-
         currentResult = result
 
-        // Update waveform levels
         let blockSize = left.count / 32
         guard blockSize > 0 else { return }
-        var newLeft = [Float](repeating: 0, count: 32)
-        var newRight = [Float](repeating: 0, count: 32)
+        var newL = [Float](repeating: 0, count: 32)
+        var newR = [Float](repeating: 0, count: 32)
         for i in 0..<32 {
-            let start = i * blockSize
-            let end = min(start + blockSize, left.count)
-            vDSP_rmsqv(Array(left[start..<end]), 1, &newLeft[i], vDSP_Length(end - start))
-            vDSP_rmsqv(Array(right[start..<end]), 1, &newRight[i], vDSP_Length(end - start))
+            let s = i * blockSize
+            let e = min(s + blockSize, left.count)
+            vDSP_rmsqv(Array(left[s..<e]), 1, &newL[i], vDSP_Length(e - s))
+            vDSP_rmsqv(Array(right[s..<e]), 1, &newR[i], vDSP_Length(e - s))
         }
-        leftLevels = newLeft
-        rightLevels = newRight
+        leftLevels = newL
+        rightLevels = newR
     }
 }
