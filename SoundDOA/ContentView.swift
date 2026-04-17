@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Main UI: radar direction indicator + algorithm selector + metrics
 struct ContentView: View {
-    @State private var vm = AudioViewModel()
+    @StateObject private var vm = AudioViewModel()
 
     var body: some View {
         NavigationStack {
