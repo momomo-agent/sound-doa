@@ -7,18 +7,46 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0CB64FC06C4B65FAD5C8D99E /* MetricsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1B814CBC38A1829ABB68749 /* MetricsView.swift */; };
+		19E9DC57585ABFD2EAA22EAF /* DOAResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCA47844A94BC5C65985C1EA /* DOAResult.swift */; };
+		336C7E767C0C0E67504C836C /* TDOAProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A47E27070473A161B14AD789 /* TDOAProcessor.swift */; };
+		3CCEF32885421390495096FE /* DSPUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = F423BC8D14E6FAD9EDEEA3A4 /* DSPUtils.swift */; };
 		42774A2C832732EDB5A61F1B /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 593B3AE439F95EE5CC37ACFF /* ContentView.swift */; };
+		4F7C0E5421A31DA80ABE9561 /* AudioViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FD4A258AADA4C820C59F1F7 /* AudioViewModel.swift */; };
 		564C27DEFFC834B731FB287B /* SoundDOAApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4CFFEA6CF04F254F4CE4D1D /* SoundDOAApp.swift */; };
+		878A99EF4E1AAF5C0D4F4C60 /* ILDProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC0E7C0CB2F58513ED1F32EE /* ILDProcessor.swift */; };
+		B21BC3FBBB90B3B24143B200 /* DirectionIndicatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95DB4C3AB90DBB45CF376291 /* DirectionIndicatorView.swift */; };
+		DCF5F15219D4F1FABF390C38 /* AudioCaptureManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = F98264852DADC450C2948663 /* AudioCaptureManager.swift */; };
+		F6AAD0DF2E439010A0308067 /* WaveformView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFD23C40CEDDAA9C511D2A85 /* WaveformView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		0C1BB29B93073C8AAAFBFA70 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		593B3AE439F95EE5CC37ACFF /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		5FD4A258AADA4C820C59F1F7 /* AudioViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioViewModel.swift; sourceTree = "<group>"; };
+		95DB4C3AB90DBB45CF376291 /* DirectionIndicatorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectionIndicatorView.swift; sourceTree = "<group>"; };
+		A47E27070473A161B14AD789 /* TDOAProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TDOAProcessor.swift; sourceTree = "<group>"; };
 		C4BAD2801D0DD0AFDB62F146 /* SoundDOA.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = SoundDOA.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		DCA47844A94BC5C65985C1EA /* DOAResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DOAResult.swift; sourceTree = "<group>"; };
+		F1B814CBC38A1829ABB68749 /* MetricsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricsView.swift; sourceTree = "<group>"; };
+		F423BC8D14E6FAD9EDEEA3A4 /* DSPUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DSPUtils.swift; sourceTree = "<group>"; };
 		F4CFFEA6CF04F254F4CE4D1D /* SoundDOAApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoundDOAApp.swift; sourceTree = "<group>"; };
+		F98264852DADC450C2948663 /* AudioCaptureManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCaptureManager.swift; sourceTree = "<group>"; };
+		FC0E7C0CB2F58513ED1F32EE /* ILDProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ILDProcessor.swift; sourceTree = "<group>"; };
+		FFD23C40CEDDAA9C511D2A85 /* WaveformView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaveformView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
+		46DCA9C17B32CC6A5B6BDF53 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				95DB4C3AB90DBB45CF376291 /* DirectionIndicatorView.swift */,
+				F1B814CBC38A1829ABB68749 /* MetricsView.swift */,
+				FFD23C40CEDDAA9C511D2A85 /* WaveformView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
 		605274C9F24D8B2A11CDB850 /* Products */ = {
 			isa = PBXGroup;
 			children = (
@@ -27,14 +55,37 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		9D61AFE3C48B32602D50B363 /* Audio */ = {
+			isa = PBXGroup;
+			children = (
+				F98264852DADC450C2948663 /* AudioCaptureManager.swift */,
+				5FD4A258AADA4C820C59F1F7 /* AudioViewModel.swift */,
+			);
+			path = Audio;
+			sourceTree = "<group>";
+		};
 		A06192611E73B4CA13932242 /* SoundDOA */ = {
 			isa = PBXGroup;
 			children = (
 				593B3AE439F95EE5CC37ACFF /* ContentView.swift */,
 				0C1BB29B93073C8AAAFBFA70 /* Info.plist */,
 				F4CFFEA6CF04F254F4CE4D1D /* SoundDOAApp.swift */,
+				9D61AFE3C48B32602D50B363 /* Audio */,
+				AADD0F8312CDEB76BD2680DF /* Processors */,
+				46DCA9C17B32CC6A5B6BDF53 /* Views */,
 			);
 			path = SoundDOA;
+			sourceTree = "<group>";
+		};
+		AADD0F8312CDEB76BD2680DF /* Processors */ = {
+			isa = PBXGroup;
+			children = (
+				DCA47844A94BC5C65985C1EA /* DOAResult.swift */,
+				F423BC8D14E6FAD9EDEEA3A4 /* DSPUtils.swift */,
+				FC0E7C0CB2F58513ED1F32EE /* ILDProcessor.swift */,
+				A47E27070473A161B14AD789 /* TDOAProcessor.swift */,
+			);
+			path = Processors;
 			sourceTree = "<group>";
 		};
 		B248C4D831C90EC77F4BC3D3 = {
@@ -103,8 +154,17 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DCF5F15219D4F1FABF390C38 /* AudioCaptureManager.swift in Sources */,
+				4F7C0E5421A31DA80ABE9561 /* AudioViewModel.swift in Sources */,
 				42774A2C832732EDB5A61F1B /* ContentView.swift in Sources */,
+				19E9DC57585ABFD2EAA22EAF /* DOAResult.swift in Sources */,
+				3CCEF32885421390495096FE /* DSPUtils.swift in Sources */,
+				B21BC3FBBB90B3B24143B200 /* DirectionIndicatorView.swift in Sources */,
+				878A99EF4E1AAF5C0D4F4C60 /* ILDProcessor.swift in Sources */,
+				0CB64FC06C4B65FAD5C8D99E /* MetricsView.swift in Sources */,
 				564C27DEFFC834B731FB287B /* SoundDOAApp.swift in Sources */,
+				336C7E767C0C0E67504C836C /* TDOAProcessor.swift in Sources */,
+				F6AAD0DF2E439010A0308067 /* WaveformView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
