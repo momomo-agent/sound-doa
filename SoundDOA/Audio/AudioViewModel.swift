@@ -13,6 +13,16 @@ final class AudioViewModel {
     var selectedAlgorithm: DOAAlgorithm = .tdoa
     var currentResult: DOAResult = .zero
     var errorMessage: String?
+    var isDemoMode: Bool = false
+    var isSimulator: Bool = false
+
+    private static func checkSimulator() -> Bool {
+        #if targetEnvironment(simulator)
+        return true
+        #else
+        return false
+        #endif
+    }
     var leftLevels: [Float] = Array(repeating: 0, count: 32)
     var rightLevels: [Float] = Array(repeating: 0, count: 32)
     var micSpacing: Double = 0.10  // meters
@@ -26,6 +36,8 @@ final class AudioViewModel {
     private var pendingRight: [Float]?
 
     init() {
+        isSimulator = Self.checkSimulator()
+        isDemoMode = isSimulator
         tdoaProcessor = TDOAProcessor(fftSize: 2048, sampleRate: 16000, micSpacing: micSpacing)
         ildProcessor = ILDProcessor(fftSize: 2048, sampleRate: 16000)
     }

@@ -56,7 +56,7 @@ struct ContentView: View {
                     }
                     .padding(.horizontal)
 
-                    if let err = vm.errorMessage {
+                    if let err = vm.errorMessage, !vm.isDemoMode {
                         Text(err)
                             .font(.caption)
                             .foregroundStyle(.red)
@@ -69,12 +69,21 @@ struct ContentView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        vm.toggleRecording()
+                        if !vm.isDemoMode {
+                            vm.toggleRecording()
+                        }
                     } label: {
-                        Image(systemName: vm.isRunning ? "stop.circle.fill" : "play.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(vm.isRunning ? .red : .green)
+                        if vm.isDemoMode {
+                            Label("Demo", systemImage: "waveform.circle.fill")
+                                .font(.subheadline.bold())
+                                .foregroundStyle(.orange)
+                        } else {
+                            Image(systemName: vm.isRunning ? "stop.circle.fill" : "play.circle.fill")
+                                .font(.title2)
+                                .foregroundStyle(vm.isRunning ? .red : .green)
+                        }
                     }
+                    .disabled(vm.isDemoMode)
                 }
             }
         }
