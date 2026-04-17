@@ -1,0 +1,22 @@
+name: SoundDOA
+options:
+  bundleIdPrefix: com.momomo
+  deploymentTarget:
+    iOS: "17.0"
+  xcodeVersion: "16.0"
+settings:
+  SWIFT_VERSION: "6.0"
+  DEVELOPMENT_TEAM: P2GN9QW8E5
+targets:
+  SoundDOA:
+    type: application
+    platform: iOS
+    sources: [SoundDOA]
+    settings:
+      INFOPLIST_FILE: SoundDOA/Info.plist
+      PRODUCT_BUNDLE_IDENTIFIER: com.momomo.sound-doa
+    info:
+      path: SoundDOA/Info.plist
+      properties:
+        NSMicrophoneUsageDescription: "需要麦克风权限来检测声源方向"
+        UILaunchScreen: {}
