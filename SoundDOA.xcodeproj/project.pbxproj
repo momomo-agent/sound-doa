@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		0CB64FC06C4B65FAD5C8D99E /* MetricsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1B814CBC38A1829ABB68749 /* MetricsView.swift */; };
 		19E9DC57585ABFD2EAA22EAF /* DOAResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCA47844A94BC5C65985C1EA /* DOAResult.swift */; };
+		2D989D53DCB5C55C13BE22BA /* AudioCaptureEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03245A35F42351684A13DC94 /* AudioCaptureEngine.swift */; };
 		336C7E767C0C0E67504C836C /* TDOAProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A47E27070473A161B14AD789 /* TDOAProcessor.swift */; };
 		3CCEF32885421390495096FE /* DSPUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = F423BC8D14E6FAD9EDEEA3A4 /* DSPUtils.swift */; };
 		42774A2C832732EDB5A61F1B /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 593B3AE439F95EE5CC37ACFF /* ContentView.swift */; };
@@ -19,6 +20,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		03245A35F42351684A13DC94 /* AudioCaptureEngine.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AudioCaptureEngine.swift; sourceTree = "<group>"; };
 		0C1BB29B93073C8AAAFBFA70 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		593B3AE439F95EE5CC37ACFF /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		95DB4C3AB90DBB45CF376291 /* DirectionIndicatorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectionIndicatorView.swift; sourceTree = "<group>"; };
@@ -59,6 +61,7 @@
 				F4CFFEA6CF04F254F4CE4D1D /* SoundDOAApp.swift */,
 				AADD0F8312CDEB76BD2680DF /* Processors */,
 				46DCA9C17B32CC6A5B6BDF53 /* Views */,
+				03245A35F42351684A13DC94 /* AudioCaptureEngine.swift */,
 			);
 			path = SoundDOA;
 			sourceTree = "<group>";
@@ -96,8 +99,6 @@
 			dependencies = (
 			);
 			name = SoundDOA;
-			packageProductDependencies = (
-			);
 			productName = SoundDOA;
 			productReference = C4BAD2801D0DD0AFDB62F146 /* SoundDOA.app */;
 			productType = "com.apple.product-type.application";
@@ -149,6 +150,7 @@
 				564C27DEFFC834B731FB287B /* SoundDOAApp.swift in Sources */,
 				336C7E767C0C0E67504C836C /* TDOAProcessor.swift in Sources */,
 				F6AAD0DF2E439010A0308067 /* WaveformView.swift in Sources */,
+				2D989D53DCB5C55C13BE22BA /* AudioCaptureEngine.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
