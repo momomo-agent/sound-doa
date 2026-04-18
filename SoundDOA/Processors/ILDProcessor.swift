@@ -2,13 +2,14 @@ import Accelerate
 import Foundation
 
 /// ILD processor using time-domain bandpass filtering + RMS
-/// More reliable than FFT-based frequency-domain approach
 final class ILDProcessor: @unchecked Sendable {
     let sampleRate: Float
 
-    // Simple 2nd-order IIR bandpass filter coefficients
+    /// Stateful 2nd-order IIR bandpass filter
     struct BandPass {
         let b0, b1, b2, a1, a2: Float
+
+        // Filter state — persists across frames
         var x1: Float = 0, x2: Float = 0
         var y1: Float = 0, y2: Float = 0
 
@@ -27,6 +28,7 @@ final class ILDProcessor: @unchecked Sendable {
             b2 = r * r - k
         }
 
+        /// Process samples in-place, updating internal state
         mutating func process(_ input: [Float]) -> [Float] {
             var output = [Float](repeating: 0, count: input.count)
             for i in 0..<input.count {
@@ -47,47 +49,53 @@ final class ILDProcessor: @unchecked Sendable {
         (2000, 8000)
     ]
 
+    // Persistent filter state across frames
+    private var filtersL: [BandPass] = []
+    private var filtersR: [BandPass] = []
+
     init(fftSize: Int = 2048, sampleRate: Float = 44100) {
         self.sampleRate = sampleRate
+        // Create persistent filters
+        for band in Self.bandLimits {
+            filtersL.append(BandPass(lowHz: band.low, highHz: band.high, fs: sampleRate))
+            filtersR.append(BandPass(lowHz: band.low, highHz: band.high, fs: sampleRate))
+        }
     }
 
     func process(left: [Float], right: [Float]) -> DOAResult {
         let n = min(left.count, right.count)
 
-        // Overall RMS ILD
+        // Overall RMS ILD (time-domain, no filtering)
         var rmsL: Float = 0, rmsR: Float = 0
         vDSP_rmsqv(left, 1, &rmsL, vDSP_Length(n))
         vDSP_rmsqv(right, 1, &rmsR, vDSP_Length(n))
 
         let ildOverall: Float
-        if rmsL > 1e-10 && rmsR > 1e-10 {
+        if rmsL > 1e-8 && rmsR > 1e-8 {
             ildOverall = 20.0 * log10f(rmsL / rmsR)
         } else {
             ildOverall = 0
         }
 
-        // Per-band ILD using time-domain bandpass
+        // Per-band ILD using persistent filters
         var bandILDs: [Float] = []
 
-        for band in Self.bandLimits {
-            var filterL = BandPass(lowHz: band.low, highHz: band.high, fs: sampleRate)
-            var filterR = BandPass(lowHz: band.low, highHz: band.high, fs: sampleRate)
-
-            let filteredL = filterL.process(left)
-            let filteredR = filterR.process(right)
+        for i in 0..<filtersL.count {
+            let filteredL = filtersL[i].process(left)
+            let filteredR = filtersR[i].process(right)
 
             var eL: Float = 0, eR: Float = 0
             vDSP_rmsqv(filteredL, 1, &eL, vDSP_Length(n))
             vDSP_rmsqv(filteredR, 1, &eR, vDSP_Length(n))
 
-            if eL > 1e-12 && eR > 1e-12 {
+            if eL > 1e-10 && eR > 1e-10 {
                 bandILDs.append(20.0 * log10f(eL / eR))
             } else {
                 bandILDs.append(0)
             }
         }
 
-        // Weighted angle: high-freq ILD more directional (phone body shadowing)
+        // Weighted angle: high-freq ILD more directional
         let weights: [Float] = [1, 2, 4]
         var weightedILD: Float = 0
         var totalWeight: Float = 0
@@ -97,7 +105,6 @@ final class ILDProcessor: @unchecked Sendable {
         }
         weightedILD /= totalWeight
 
-        // Map ILD to angle: -25dB → -90°, 0 → 0°, +25dB → +90°
         let clampedILD = max(-25, min(25, weightedILD))
         let angle = Double(clampedILD / 25.0 * 90.0)
 

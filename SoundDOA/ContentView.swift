@@ -56,6 +56,13 @@ final class AudioCapture {
 
             try eng.start()
             print("[SoundDOA] Engine started (\(actualSampleRate)Hz, \(format.channelCount)ch)")
+            print("[SoundDOA] Format details: channels=\(format.channelCount), sampleRate=\(format.sampleRate), isInterleaved=\(format.isInterleaved)")
+
+            if format.channelCount < 2 {
+                print("[SoundDOA] WARNING: Got mono input, TDOA will not work. Attempting to force stereo...")
+                // Try requesting stereo again
+                try? session.setPreferredInputNumberOfChannels(2)
+            }
 
             // Create processors with actual device sample rate
             tdoaProcessor = TDOAProcessor(fftSize: 2048, sampleRate: actualSampleRate, micSpacing: 0.10)
