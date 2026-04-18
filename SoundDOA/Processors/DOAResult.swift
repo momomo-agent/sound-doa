@@ -11,6 +11,7 @@ enum CaptureMode: String, CaseIterable, Identifiable {
     case stereoOmni = "Stereo+Omni"
     case stereoFrontBack = "Front vs Back"
     case rawAudioUnit = "Raw AudioUnit"
+    case threeD = "3D Mapping"
 
     var id: String { rawValue }
 
@@ -20,6 +21,7 @@ enum CaptureMode: String, CaseIterable, Identifiable {
         case .stereoOmni: return "Default mode, omnidirectional pattern (no beamforming)"
         case .stereoFrontBack: return "Compare front mic vs back mic separately"
         case .rawAudioUnit: return "Low-level AudioUnit bypass (RemoteIO)"
+        case .threeD: return "3D: test each data source, map channel→mic"
         }
     }
 
@@ -29,6 +31,7 @@ enum CaptureMode: String, CaseIterable, Identifiable {
         case .stereoOmni: return "circle.dotted"
         case .stereoFrontBack: return "arrow.up.arrow.down"
         case .rawAudioUnit: return "cpu"
+        case .threeD: return "cube"
         }
     }
 }
@@ -54,6 +57,11 @@ struct CaptureSnapshot: Identifiable {
     let lag: Double
     let peakCorr: Double
     let ildDB: Double
-    let rawLeft: [Float]   // first 64 samples
-    let rawRight: [Float]  // first 64 samples
+    let rawLeft: [Float]
+    let rawRight: [Float]
+    // 3D
+    var elevation: Double = 0
+    var frontRMS: Double = 0
+    var backRMS: Double = 0
+    var bottomRMS: Double = 0
 }

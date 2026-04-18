@@ -51,15 +51,28 @@ struct ContentView: View {
                 // Selected mode detail
                 ScrollView {
                     VStack(spacing: 16) {
-                        // Direction indicator
-                        DirectionView(
-                            angle: results[selectedTab]?.angle ?? 0,
-                            confidence: results[selectedTab]?.confidence ?? 0
-                        )
+                        // Direction indicator (2D or 3D)
+                        if selectedTab == .threeD {
+                            Direction3DView(
+                                azimuth: results[selectedTab]?.angle ?? 0,
+                                elevation: snapshots[selectedTab]?.elevation ?? 0,
+                                confidence: results[selectedTab]?.confidence ?? 0
+                            )
+                        } else {
+                            DirectionView(
+                                angle: results[selectedTab]?.angle ?? 0,
+                                confidence: results[selectedTab]?.confidence ?? 0
+                            )
+                        }
 
                         // Metrics
                         if let snap = snapshots[selectedTab] {
                             MetricsGrid(snapshot: snap)
+                        }
+
+                        // 3D mic RMS bars
+                        if selectedTab == .threeD, let snap = snapshots[selectedTab] {
+                            MicRMSView(front: snap.frontRMS, back: snap.backRMS, bottom: snap.bottomRMS)
                         }
 
                         // Raw waveform comparison
@@ -375,6 +388,133 @@ struct ComparisonTable: View {
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
             }
+        }
+    }
+}
+
+// MARK: - 3D Direction View
+
+struct Direction3DView: View {
+    let azimuth: Double
+    let elevation: Double
+    let confidence: Double
+
+    var body: some View {
+        VStack(spacing: 12) {
+            ZStack {
+                Rectangle()
+                    .fill(Color.gray.opacity(0.3))
+                    .frame(height: 1)
+
+                Circle()
+                    .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                    .frame(width: 160, height: 160)
+
+                let azRad = azimuth * .pi / 180
+                let elRad = elevation * .pi / 180
+                let projLen = 70.0 * cos(elRad) * min(1.0, confidence + 0.3)
+                let vertOff = 70.0 * sin(elRad) * min(1.0, confidence + 0.3)
+
+                Path { path in
+                    path.move(to: CGPoint(x: 90, y: 90))
+                    path.addLine(to: CGPoint(
+                        x: 90 + cos(azRad - .pi/2) * projLen,
+                        y: 90 + sin(azRad - .pi/2) * projLen))
+                }
+                .stroke(Color.red, lineWidth: 3)
+                .frame(width: 180, height: 180)
+
+                Circle()
+                    .fill(Color.orange)
+                    .frame(width: 8, height: 8)
+                    .offset(y: CGFloat(-vertOff))
+
+                Circle().fill(Color.red).frame(width: 6, height: 6)
+
+                Text("上").font(.caption2).foregroundStyle(.secondary).offset(y: -85)
+                Text("下").font(.caption2).foregroundStyle(.secondary).offset(y: 85)
+                Text("左").font(.caption2).foregroundStyle(.secondary).offset(x: -85)
+                Text("右").font(.caption2).foregroundStyle(.secondary).offset(x: 85)
+            }
+            .frame(width: 180, height: 180)
+
+            VStack(spacing: 2) {
+                HStack(spacing: 16) {
+                    VStack {
+                        Text(String(format: "%.1f°", azimuth))
+                            .font(.system(size: 28, weight: .bold, design: .monospaced))
+                        Text("Azimuth")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    VStack {
+                        Text(String(format: "%.1f°", elevation))
+                            .font(.system(size: 28, weight: .bold, design: .monospaced))
+                            .foregroundStyle(.orange)
+                        Text("Elevation")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Text(String(format: "Confidence: %.0f%%", confidence * 100))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+// MARK: - Mic RMS View
+
+struct MicRMSView: View {
+    let front: Double
+    let back: Double
+    let bottom: Double
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Per-Mic RMS (3D)")
+                .font(.caption.bold())
+
+            let maxRMS = max(front, max(back, max(bottom, 0.0001)))
+
+            MicBar(label: "前 (Front)", rms: front, maxRMS: maxRMS, color: .blue)
+            MicBar(label: "后 (Back)", rms: back, maxRMS: maxRMS, color: .green)
+            MicBar(label: "下 (Bottom)", rms: bottom, maxRMS: maxRMS, color: .orange)
+
+            if front + back + bottom > 0.0001 {
+                let topAvg = (front + back) / 2
+                let ratio = topAvg / max(bottom, 0.0001)
+                Text("Top/Bottom ratio: \(String(format: "%.2f", ratio)) → \(ratio > 1.2 ? "Above" : ratio < 0.8 ? "Below" : "Level")")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+struct MicBar: View {
+    let label: String
+    let rms: Double
+    let maxRMS: Double
+    let color: Color
+
+    var body: some View {
+        HStack {
+            Text(label)
+                .font(.caption2)
+                .frame(width: 80, alignment: .leading)
+            GeometryReader { geo in
+                let w = geo.size.width
+                let barW = CGFloat(rms / maxRMS) * w
+                Rectangle()
+                    .fill(color.opacity(0.7))
+                    .frame(width: max(2, barW))
+            }
+            .frame(height: 16)
+            Text(String(format: "%.4f", rms))
+                .font(.system(.caption2, design: .monospaced))
+                .frame(width: 60, alignment: .trailing)
         }
     }
 }
