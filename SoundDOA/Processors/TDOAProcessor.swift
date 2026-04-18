@@ -24,18 +24,22 @@ final class TDOAProcessor: @unchecked Sendable {
         // Compute cross-correlation for lags in [-maxLag, maxLag]
         var corr = [Float](repeating: 0, count: 2 * maxLag + 1)
 
-        // Use Accelerate for vectorized dot products
         for lag in -maxLag...maxLag {
             var dotProduct: Float = 0
             if lag >= 0 {
                 let count = windowSize - lag
                 if count > 0 {
-                    vDSP_dotpr(left, 1, UnsafePointer(right).advanced(by: lag), 1, &dotProduct, vDSP_Length(count))
+                    // Use standard array subscripting (safe)
+                    let lSlice = Array(left[0..<count])
+                    let rSlice = Array(right[lag..<(lag + count)])
+                    vDSP_dotpr(lSlice, 1, rSlice, 1, &dotProduct, vDSP_Length(count))
                 }
             } else {
                 let count = windowSize + lag
                 if count > 0 {
-                    vDSP_dotpr(UnsafePointer(left).advanced(by: -lag), 1, right, 1, &dotProduct, vDSP_Length(count))
+                    let lSlice = Array(left[-lag..<(-lag + count)])
+                    let rSlice = Array(right[0..<count])
+                    vDSP_dotpr(lSlice, 1, rSlice, 1, &dotProduct, vDSP_Length(count))
                 }
             }
             corr[lag + maxLag] = dotProduct
@@ -77,6 +81,17 @@ final class TDOAProcessor: @unchecked Sendable {
         vDSP_meanv(corr, 1, &mean, vDSP_Length(corr.count))
         let confidence = abs(mean) > 1e-10 ? min(1.0, Double(abs(peakVal) / (abs(mean) * 5.0))) : 0
 
+        // Debug: check if left and right are identical
+        var diffEnergy: Float = 0
+        for i in 0..<min(windowSize, n) {
+            let d = left[i] - right[i]
+            diffEnergy += d * d
+        }
+        let diffRMS = sqrt(diffEnergy / Float(min(windowSize, n)))
+        if diffRMS < 1e-6 {
+            print("[SoundDOA] WARNING: Left and right channels are nearly identical! diffRMS=\(diffRMS)")
+        }
+
         return DOAResult(
             angle: angleDegrees,
             confidence: max(0, confidence),
@@ -84,7 +99,8 @@ final class TDOAProcessor: @unchecked Sendable {
             metadata: [
                 "delaySamples": Double(refinedLag),
                 "delayUs": delaySeconds * 1_000_000,
-                "peakCorr": Double(abs(peakVal))
+                "peakCorr": Double(abs(peakVal)),
+                "diffRMS": Double(diffRMS)
             ]
         )
     }

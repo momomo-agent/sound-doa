@@ -1,65 +1,13 @@
 import Accelerate
 import Foundation
 
-/// ILD processor using time-domain bandpass filtering + RMS
+/// ILD processor — time-domain RMS only (reliable)
+/// Band-pass ILD disabled until filter coefficients validated
 final class ILDProcessor: @unchecked Sendable {
     let sampleRate: Float
 
-    /// Stateful 2nd-order IIR bandpass filter
-    struct BandPass {
-        let b0, b1, b2, a1, a2: Float
-
-        // Filter state — persists across frames
-        var x1: Float = 0, x2: Float = 0
-        var y1: Float = 0, y2: Float = 0
-
-        init(lowHz: Float, highHz: Float, fs: Float) {
-            let fl = lowHz / fs
-            let fh = highHz / fs
-            let center = sqrt(fl * fh)
-            let bw = fh - fl
-            let r = 1 - 3 * bw
-            let cosVal = cos(2 * .pi * center)
-            let k = (1 - 2 * r * cosVal + r * r) / (2 * (1 - r * cosVal))
-            a1 = 2 * r * cosVal
-            a2 = -r * r
-            b0 = 1 - k
-            b1 = 2 * (k - r) * cosVal
-            b2 = r * r - k
-        }
-
-        /// Process samples in-place, updating internal state
-        mutating func process(_ input: [Float]) -> [Float] {
-            var output = [Float](repeating: 0, count: input.count)
-            for i in 0..<input.count {
-                let x0 = input[i]
-                let y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
-                x2 = x1; x1 = x0
-                y2 = y1; y1 = y0
-                output[i] = y0
-            }
-            return output
-        }
-    }
-
-    static let bandNames = ["Low 0-500Hz", "Mid 500-2kHz", "High 2-8kHz"]
-    static let bandLimits: [(low: Float, high: Float)] = [
-        (100, 500),
-        (500, 2000),
-        (2000, 8000)
-    ]
-
-    // Persistent filter state across frames
-    private var filtersL: [BandPass] = []
-    private var filtersR: [BandPass] = []
-
     init(fftSize: Int = 2048, sampleRate: Float = 44100) {
         self.sampleRate = sampleRate
-        // Create persistent filters
-        for band in Self.bandLimits {
-            filtersL.append(BandPass(lowHz: band.low, highHz: band.high, fs: sampleRate))
-            filtersR.append(BandPass(lowHz: band.low, highHz: band.high, fs: sampleRate))
-        }
     }
 
     func process(left: [Float], right: [Float]) -> DOAResult {
@@ -77,16 +25,54 @@ final class ILDProcessor: @unchecked Sendable {
             ildOverall = 0
         }
 
-        // Per-band ILD using persistent filters
+        // Band-split ILD using short-time energy in frequency bands
+        // Use sliding window energy (time-domain approximation)
+        // Low: emphasize low-energy portions, High: emphasize high-energy portions
+        // Simple approach: compute energy in short windows and look at spectral shape
+
+        // For now, compute per-band ILD using simple energy difference
+        // Split signal into frequency bands using decimation + differencing
+        let windowSize = 512
         var bandILDs: [Float] = []
+        let bandNames = ["Low", "Mid", "High"]
 
-        for i in 0..<filtersL.count {
-            let filteredL = filtersL[i].process(left)
-            let filteredR = filtersR[i].process(right)
-
+        // Approximate band separation using running difference (high-freq emphasis)
+        // Low: smoothed signal, High: |signal - smoothed|
+        for (idx, _) in bandNames.enumerated() {
             var eL: Float = 0, eR: Float = 0
-            vDSP_rmsqv(filteredL, 1, &eL, vDSP_Length(n))
-            vDSP_rmsqv(filteredR, 1, &eR, vDSP_Length(n))
+
+            if idx == 0 {
+                // Low band: use smoothed (low-pass) version
+                var smoothedL = [Float](repeating: 0, count: n)
+                var smoothedR = [Float](repeating: 0, count: n)
+                // Simple moving average (low-pass)
+                let avgLen = min(8, n)
+                for i in avgLen..<n {
+                    var sumL: Float = 0, sumR: Float = 0
+                    for j in 0..<avgLen {
+                        sumL += left[i - j]
+                        sumR += right[i - j]
+                    }
+                    smoothedL[i] = sumL / Float(avgLen)
+                    smoothedR[i] = sumR / Float(avgLen)
+                }
+                vDSP_rmsqv(smoothedL, 1, &eL, vDSP_Length(n))
+                vDSP_rmsqv(smoothedR, 1, &eR, vDSP_Length(n))
+            } else if idx == 2 {
+                // High band: use difference (high-pass)
+                var diffL = [Float](repeating: 0, count: n)
+                var diffR = [Float](repeating: 0, count: n)
+                for i in 1..<n {
+                    diffL[i] = left[i] - left[i-1]
+                    diffR[i] = right[i] - right[i-1]
+                }
+                vDSP_rmsqv(diffL, 1, &eL, vDSP_Length(n))
+                vDSP_rmsqv(diffR, 1, &eR, vDSP_Length(n))
+            } else {
+                // Mid band: use original signal (overall)
+                vDSP_rmsqv(left, 1, &eL, vDSP_Length(n))
+                vDSP_rmsqv(right, 1, &eR, vDSP_Length(n))
+            }
 
             if eL > 1e-10 && eR > 1e-10 {
                 bandILDs.append(20.0 * log10f(eL / eR))
