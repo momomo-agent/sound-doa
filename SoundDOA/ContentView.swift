@@ -31,14 +31,16 @@ final class AudioCapture {
 
     private var latestLeft: [Float]?
     private var latestRight: [Float]?
+    private var angleHistory: [Double] = []
+    private let smoothWindow = 5
 
-    private var tdoaProcessor = TDOAProcessor(fftSize: 2048, sampleRate: 44100, micSpacing: 0.10)
+    private var tdoaProcessor = TDOAProcessor(fftSize: 2048, sampleRate: 44100, micSpacing: 0.20)
     private var ildProcessor = ILDProcessor(fftSize: 2048, sampleRate: 44100)
 
     func start() {
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
+            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .mixWithOthers])
             try session.setActive(true)
 
             // WWDC20 correct order: activate first, then configure polar pattern
@@ -72,6 +74,7 @@ final class AudioCapture {
 
             input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
                 self?.handleBuffer(buffer)
+                self?.processBuffer()
             }
 
             try eng.start()
@@ -85,12 +88,10 @@ final class AudioCapture {
             }
 
             // Create processors with actual device sample rate
-            tdoaProcessor = TDOAProcessor(fftSize: 2048, sampleRate: actualSampleRate, micSpacing: 0.10)
+            tdoaProcessor = TDOAProcessor(fftSize: 2048, sampleRate: actualSampleRate, micSpacing: 0.20)
             ildProcessor = ILDProcessor(fftSize: 2048, sampleRate: Float(actualSampleRate))
 
-            timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-                self?.processBuffer()
-            }
+
 
         } catch {
             flog("[SoundDOA] Error: \(error)")
@@ -111,6 +112,7 @@ final class AudioCapture {
     private func handleBuffer(_ buffer: AVAudioPCMBuffer) {
         let frames = Int(buffer.frameLength)
         let channels = Int(buffer.format.channelCount)
+        flog("[SoundDOA] tap: frames=\(frames) ch=\(channels)")
         guard frames > 0, let ch = buffer.floatChannelData else { return }
 
         if channels >= 2 {
@@ -124,7 +126,10 @@ final class AudioCapture {
     }
 
     private func processBuffer() {
-        guard let left = latestLeft, let right = latestRight else { return }
+        guard let left = latestLeft, let right = latestRight else {
+            flog("[SoundDOA] processBuffer: no data")
+            return
+        }
         latestLeft = nil
         latestRight = nil
 
@@ -135,8 +140,18 @@ final class AudioCapture {
         case .ild:
             result = ildProcessor.process(left: left, right: right)
         }
+        let lag = result.metadata["delaySamples"] ?? 0
+        let peak = result.metadata["peakCorr"] ?? 0
+        let dRMS = result.metadata["diffRMS"] ?? 0
+        flog("[SoundDOA] gcc: lag=\(lag) peak=\(peak) diffRMS=\(dRMS)")
         onResult?(result)
-        flog("[SoundDOA] result: angle=\(result.angle) conf=\(result.confidence) meta=\(result.metadata)")
+        // Smooth angle over last N high-confidence results
+        if result.confidence > 0.25 && (result.metadata["diffRMS"] ?? 0) > 0.003 {
+            angleHistory.append(result.angle)
+            if angleHistory.count > smoothWindow { angleHistory.removeFirst() }
+            let smoothed = DOAResult(angle: angleHistory.reduce(0,+)/Double(angleHistory.count), confidence: result.confidence, timestamp: result.timestamp, metadata: result.metadata)
+            flog("[SoundDOA] smoothed: angle=\(smoothed.angle) conf=\(smoothed.confidence) raw=\(result.angle)")
+        }
 
         let blockSize = left.count / 32
         guard blockSize > 0 else { return }
@@ -162,7 +177,7 @@ struct ContentView: View {
     @State private var errorMessage: String?
     @State private var leftLevels: [Float] = Array(repeating: 0, count: 32)
     @State private var rightLevels: [Float] = Array(repeating: 0, count: 32)
-    @State private var micSpacing: Double = 0.10
+    @State private var micSpacing: Double = 0.20
 
     private let capture = AudioCapture()
 
@@ -174,6 +189,7 @@ struct ContentView: View {
 
     private func startRecording() {
         flog("[SoundDOA] startRecording() called")
+        capture.selectedAlgorithm = selectedAlgorithm
         let session = AVAudioSession.sharedInstance()
         flog("[SoundDOA] permission: \(session.recordPermission.rawValue)")
         if session.recordPermission == .denied {
