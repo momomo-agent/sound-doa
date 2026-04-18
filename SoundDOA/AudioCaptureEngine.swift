@@ -1,5 +1,6 @@
 import AVFoundation
 import Accelerate
+import AudioToolbox
 import Foundation
 
 // MARK: - File Logger
@@ -20,6 +21,7 @@ func flog(_ msg: String) {
 final class AudioCaptureEngine {
     let mode: CaptureMode
     private var engine: AVAudioEngine?
+    private var auUnit: AudioComponentInstance?
     private var tdoaProcessor: TDOAProcessor?
     private var ildProcessor: ILDProcessor?
 
@@ -34,53 +36,85 @@ final class AudioCaptureEngine {
     }
 
     func start() {
+        if mode == .rawAudioUnit {
+            startRawAudioUnit()
+        } else {
+            startAVAudioEngine()
+        }
+    }
+
+    func stop() {
+        engine?.inputNode.removeTap(onBus: 0)
+        engine?.stop()
+        engine = nil
+
+        if let au = auUnit {
+            AudioOutputUnitStop(au)
+            AudioComponentInstanceDispose(au)
+            auUnit = nil
+        }
+
+        angleHistory.removeAll()
+    }
+
+    // MARK: - AVAudioEngine modes
+
+    private func startAVAudioEngine() {
         do {
             let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .mixWithOthers])
+            try session.setActive(true)
 
-            // Configure based on mode
+            // Log available inputs and data sources
+            if let inputs = session.availableInputs {
+                for port in inputs {
+                    flog("[SoundDOA][\(mode.rawValue)] Input: \(port.portName) type=\(port.portType.rawValue)")
+                    if let sources = port.dataSources {
+                        for src in sources {
+                            let patterns = src.supportedPolarPatterns?.map { $0.rawValue } ?? []
+                            flog("[SoundDOA][\(mode.rawValue)]   Source: \(src.dataSourceName) id=\(src.dataSourceID) patterns=\(patterns)")
+                        }
+                    }
+                }
+            }
+
             switch mode {
             case .stereoDefault:
-                try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .mixWithOthers])
-                try session.setActive(true)
-                configureStereoPattern(session)
+                // Set stereo polar pattern on all sources that support it
+                configurePolarPattern(session, pattern: .stereo)
 
-            case .measurement:
-                try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .mixWithOthers])
-                try session.setActive(true)
-                configureStereoPattern(session)
+            case .stereoOmni:
+                // Set omnidirectional — no beamforming, raw mic signal
+                configurePolarPattern(session, pattern: .omnidirectional)
 
-            case .rawMultiChannel:
-                try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .mixWithOthers])
-                try session.setActive(true)
-                configureStereoPattern(session)
-                // Try private API: fixHardwareFormatToMultiChannel
-                let sel = NSSelectorFromString("fixHardwareFormatToMultiChannel:error:")
-                if session.responds(to: sel) {
-                    flog("[SoundDOA][\(mode.rawValue)] fixHardwareFormatToMultiChannel available, calling...")
-                    // Use ObjC-style invocation for error: parameter
-                    typealias FixMultiChFunc = @convention(c) (AnyObject, Selector, Bool, UnsafeMutablePointer<NSError?>?) -> Bool
-                    let imp = session.method(for: sel)
-                    let fn = unsafeBitCast(imp, to: FixMultiChFunc.self)
-                    var error: NSError?
-                    let ok = fn(session, sel, true, &error)
-                    flog("[SoundDOA][\(mode.rawValue)] fixHardwareFormatToMultiChannel ok=\(ok) error=\(String(describing: error))")
-                } else {
-                    flog("[SoundDOA][\(mode.rawValue)] fixHardwareFormatToMultiChannel NOT available")
+            case .stereoFrontBack:
+                // Try to select specific data sources (front vs back)
+                // First pass: just use stereo but log which source is active
+                configurePolarPattern(session, pattern: .stereo)
+                // Log the selected data source
+                if let input = session.currentRoute.inputs.first {
+                    flog("[SoundDOA][\(mode.rawValue)] Active input: \(input.portName) channels=\(input.channels?.count ?? 0)")
+                    if let channels = input.channels {
+                        for ch in channels {
+                            flog("[SoundDOA][\(mode.rawValue)]   Channel: \(ch.channelName) label=\(ch.channelLabel) number=\(ch.channelNumber)")
+                        }
+                    }
+                    flog("[SoundDOA][\(mode.rawValue)] Selected data source: \(input.selectedDataSource?.dataSourceName ?? "none")")
                 }
-                // Re-activate
-                try session.setActive(false)
-                try session.setActive(true)
 
-            case .voiceChat:
-                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .mixWithOthers])
-                try session.setActive(true)
-                configureStereoPattern(session)
+            case .rawAudioUnit:
+                break // handled separately
             }
 
             try? session.setPreferredInputNumberOfChannels(2)
-            // Re-activate after all configuration
             try session.setActive(false)
             try session.setActive(true)
+
+            // Log final route info
+            let route = session.currentRoute
+            for input in route.inputs {
+                flog("[SoundDOA][\(mode.rawValue)] Route input: \(input.portName) ch=\(input.channels?.count ?? 0) ds=\(input.selectedDataSource?.dataSourceName ?? "none")")
+            }
 
             let eng = AVAudioEngine()
             self.engine = eng
@@ -106,22 +140,165 @@ final class AudioCaptureEngine {
         }
     }
 
-    func stop() {
-        engine?.inputNode.removeTap(onBus: 0)
-        engine?.stop()
-        engine = nil
-        angleHistory.removeAll()
+    // MARK: - Raw AudioUnit (RemoteIO)
+
+    private func startRawAudioUnit() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .mixWithOthers])
+            try session.setActive(true)
+            configurePolarPattern(session, pattern: .stereo)
+            try? session.setPreferredInputNumberOfChannels(2)
+            try session.setActive(false)
+            try session.setActive(true)
+
+            // Create RemoteIO AudioUnit
+            var desc = AudioComponentDescription(
+                componentType: kAudioUnitType_Output,
+                componentSubType: kAudioUnitSubType_RemoteIO,
+                componentManufacturer: kAudioUnitManufacturer_Apple,
+                componentFlags: 0,
+                componentFlagsMask: 0
+            )
+
+            guard let component = AudioComponentFindNext(nil, &desc) else {
+                flog("[SoundDOA][\(mode.rawValue)] RemoteIO component not found")
+                onError?("RemoteIO not found")
+                return
+            }
+
+            var unit: AudioComponentInstance?
+            var status = AudioComponentInstanceNew(component, &unit)
+            guard status == noErr, let au = unit else {
+                flog("[SoundDOA][\(mode.rawValue)] AudioComponentInstanceNew failed: \(status)")
+                onError?("AudioUnit create failed: \(status)")
+                return
+            }
+            self.auUnit = au
+
+            // Enable input
+            var enableInput: UInt32 = 1
+            status = AudioUnitSetProperty(au, kAudioOutputUnitProperty_EnableIO,
+                                         kAudioUnitScope_Input, 1,
+                                         &enableInput, UInt32(MemoryLayout<UInt32>.size))
+            flog("[SoundDOA][\(mode.rawValue)] EnableIO input: \(status)")
+
+            // Get hardware format
+            var hwFormat = AudioStreamBasicDescription()
+            var hwFormatSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+            AudioUnitGetProperty(au, kAudioUnitProperty_StreamFormat,
+                               kAudioUnitScope_Input, 1,
+                               &hwFormat, &hwFormatSize)
+            flog("[SoundDOA][\(mode.rawValue)] HW format: \(hwFormat.mChannelsPerFrame)ch @ \(hwFormat.mSampleRate)Hz bits=\(hwFormat.mBitsPerChannel) interleaved=\(hwFormat.mFormatFlags & kAudioFormatFlagIsNonInterleaved == 0)")
+
+            // Set output format (what we receive in callback) to 2ch float
+            var clientFormat = AudioStreamBasicDescription(
+                mSampleRate: hwFormat.mSampleRate,
+                mFormatID: kAudioFormatLinearPCM,
+                mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsNonInterleaved,
+                mBytesPerPacket: 4,
+                mFramesPerPacket: 1,
+                mBytesPerFrame: 4,
+                mChannelsPerFrame: max(hwFormat.mChannelsPerFrame, 2),
+                mBitsPerChannel: 32,
+                mReserved: 0
+            )
+            status = AudioUnitSetProperty(au, kAudioUnitProperty_StreamFormat,
+                                         kAudioUnitScope_Output, 1,
+                                         &clientFormat, UInt32(MemoryLayout<AudioStreamBasicDescription>.size))
+            flog("[SoundDOA][\(mode.rawValue)] Set client format \(clientFormat.mChannelsPerFrame)ch: \(status)")
+
+            // Get actual output format
+            var actualFormat = AudioStreamBasicDescription()
+            var actualSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+            AudioUnitGetProperty(au, kAudioUnitProperty_StreamFormat,
+                               kAudioUnitScope_Output, 1,
+                               &actualFormat, &actualSize)
+            flog("[SoundDOA][\(mode.rawValue)] Actual output format: \(actualFormat.mChannelsPerFrame)ch @ \(actualFormat.mSampleRate)Hz")
+
+            let sr = actualFormat.mSampleRate
+            let ch = Int(actualFormat.mChannelsPerFrame)
+
+            tdoaProcessor = TDOAProcessor(fftSize: 2048, sampleRate: sr, micSpacing: 0.20)
+            ildProcessor = ILDProcessor(fftSize: 2048, sampleRate: Float(sr))
+
+            // Set render callback
+            var callbackStruct = AURenderCallbackStruct(
+                inputProc: { (inRefCon, ioActionFlags, inTimeStamp, inBusNumber, inNumberFrames, ioData) -> OSStatus in
+                    let engine = Unmanaged<AudioCaptureEngine>.fromOpaque(inRefCon).takeUnretainedValue()
+                    guard let au = engine.auUnit else { return noErr }
+
+                    // Allocate buffer
+                    let channelCount = max(Int(engine.tdoaProcessor?.sampleRate ?? 48000) > 0 ? 2 : 1, 2)
+                    var bufferList = AudioBufferList.allocate(maximumBuffers: channelCount)
+                    for i in 0..<channelCount {
+                        bufferList[i] = AudioBuffer(
+                            mNumberChannels: 1,
+                            mDataByteSize: inNumberFrames * 4,
+                            mData: malloc(Int(inNumberFrames * 4))
+                        )
+                    }
+
+                    let status = AudioUnitRender(au, ioActionFlags, inTimeStamp, 1, inNumberFrames, bufferList.unsafeMutablePointer)
+
+                    if status == noErr {
+                        let frames = Int(inNumberFrames)
+                        var left = [Float](repeating: 0, count: frames)
+                        var right = [Float](repeating: 0, count: frames)
+
+                        if let data0 = bufferList[0].mData {
+                            left = Array(UnsafeBufferPointer(start: data0.assumingMemoryBound(to: Float.self), count: frames))
+                        }
+                        if channelCount >= 2, let data1 = bufferList[1].mData {
+                            right = Array(UnsafeBufferPointer(start: data1.assumingMemoryBound(to: Float.self), count: frames))
+                        } else {
+                            right = left
+                        }
+
+                        engine.processRawBuffer(left: left, right: right, channelCount: channelCount, sampleRate: Double(engine.tdoaProcessor?.sampleRate ?? 48000))
+                    } else {
+                        flog("[SoundDOA][Raw AudioUnit] Render error: \(status)")
+                    }
+
+                    // Free buffers
+                    for i in 0..<channelCount {
+                        free(bufferList[i].mData)
+                    }
+                    free(bufferList.unsafeMutablePointer)
+
+                    return noErr
+                },
+                inputProcRefCon: Unmanaged.passUnretained(self).toOpaque()
+            )
+
+            status = AudioUnitSetProperty(au, kAudioOutputUnitProperty_SetInputCallback,
+                                         kAudioUnitScope_Global, 0,
+                                         &callbackStruct, UInt32(MemoryLayout<AURenderCallbackStruct>.size))
+            flog("[SoundDOA][\(mode.rawValue)] Set callback: \(status)")
+
+            status = AudioUnitInitialize(au)
+            flog("[SoundDOA][\(mode.rawValue)] Initialize: \(status)")
+
+            status = AudioOutputUnitStart(au)
+            flog("[SoundDOA][\(mode.rawValue)] Start: \(status)")
+
+        } catch {
+            flog("[SoundDOA][\(mode.rawValue)] Error: \(error)")
+            onError?("[\(mode.rawValue)] \(error.localizedDescription)")
+        }
     }
 
-    private func configureStereoPattern(_ session: AVAudioSession) {
+    // MARK: - Helpers
+
+    private func configurePolarPattern(_ session: AVAudioSession, pattern: AVAudioSession.PolarPattern) {
         if let inputs = session.availableInputs {
             for port in inputs {
                 if let sources = port.dataSources {
                     for src in sources {
-                        if src.supportedPolarPatterns?.contains(.stereo) == true {
+                        if src.supportedPolarPatterns?.contains(pattern) == true {
                             try? port.setPreferredDataSource(src)
-                            try? src.setPreferredPolarPattern(.stereo)
-                            flog("[SoundDOA][\(mode.rawValue)] Set stereo on \(src.dataSourceName)")
+                            try? src.setPreferredPolarPattern(pattern)
+                            flog("[SoundDOA][\(mode.rawValue)] Set \(pattern.rawValue) on \(src.dataSourceName)")
                         }
                     }
                 }
@@ -143,6 +320,10 @@ final class AudioCaptureEngine {
             right = left
         }
 
+        processRawBuffer(left: left, right: right, channelCount: channelCount, sampleRate: sampleRate)
+    }
+
+    func processRawBuffer(left: [Float], right: [Float], channelCount: Int, sampleRate: Double) {
         guard let tdoa = tdoaProcessor, let ild = ildProcessor else { return }
 
         let tdoaResult = tdoa.process(left: left, right: right)
@@ -153,7 +334,6 @@ final class AudioCaptureEngine {
         let lag = tdoaResult.metadata["delaySamples"] ?? 0
         let ildDB = ildResult.metadata["ildOverall"] ?? 0
 
-        // Fusion
         let result: DOAResult
         if diffRMS > 0.001 && peakCorr > 5 {
             result = tdoaResult
@@ -163,7 +343,6 @@ final class AudioCaptureEngine {
             result = DOAResult(angle: 0, confidence: 0, timestamp: .now, metadata: ["silent": 1])
         }
 
-        // Weighted smoothing
         if result.confidence > 0.1 && diffRMS > 0.0005 {
             let weight = diffRMS * result.confidence
             angleHistory.append((angle: result.angle, weight: weight))
@@ -174,13 +353,6 @@ final class AudioCaptureEngine {
         let smoothedAngle = totalWeight > 0
             ? angleHistory.reduce(0.0) { $0 + $1.angle * $1.weight } / totalWeight
             : result.angle
-
-        let smoothed = DOAResult(
-            angle: smoothedAngle,
-            confidence: result.confidence,
-            timestamp: .now,
-            metadata: result.metadata
-        )
 
         let snapshot = CaptureSnapshot(
             mode: mode,
@@ -198,6 +370,7 @@ final class AudioCaptureEngine {
 
         flog("[SoundDOA][\(mode.rawValue)] angle=\(String(format:"%.1f", smoothedAngle)) lag=\(String(format:"%.1f", lag)) diffRMS=\(String(format:"%.4f", diffRMS)) peak=\(String(format:"%.0f", peakCorr)) ild=\(String(format:"%.2f", ildDB))dB ch=\(channelCount)")
 
+        let smoothed = DOAResult(angle: smoothedAngle, confidence: result.confidence, timestamp: .now, metadata: result.metadata)
         onResult?(smoothed, snapshot)
     }
 }

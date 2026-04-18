@@ -8,27 +8,27 @@ enum DOAAlgorithm: String, CaseIterable {
 /// Audio capture mode — each uses different AVAudioSession configuration
 enum CaptureMode: String, CaseIterable, Identifiable {
     case stereoDefault = "Stereo Default"
-    case measurement = "Measurement"
-    case rawMultiChannel = "Raw Multi-Ch"
-    case voiceChat = "Voice Chat"
+    case stereoOmni = "Stereo+Omni"
+    case stereoFrontBack = "Front vs Back"
+    case rawAudioUnit = "Raw AudioUnit"
 
     var id: String { rawValue }
 
     var description: String {
         switch self {
         case .stereoDefault: return "Stereo polar pattern, default mode"
-        case .measurement: return "Measurement mode (bypass voice processing)"
-        case .rawMultiChannel: return "fixHardwareFormatToMultiChannel (private API)"
-        case .voiceChat: return "Voice chat mode with beamforming"
+        case .stereoOmni: return "Default mode, omnidirectional pattern (no beamforming)"
+        case .stereoFrontBack: return "Compare front mic vs back mic separately"
+        case .rawAudioUnit: return "Low-level AudioUnit bypass (RemoteIO)"
         }
     }
 
     var systemImage: String {
         switch self {
         case .stereoDefault: return "waveform"
-        case .measurement: return "ruler"
-        case .rawMultiChannel: return "cpu"
-        case .voiceChat: return "person.wave.2"
+        case .stereoOmni: return "circle.dotted"
+        case .stereoFrontBack: return "arrow.up.arrow.down"
+        case .rawAudioUnit: return "cpu"
         }
     }
 }

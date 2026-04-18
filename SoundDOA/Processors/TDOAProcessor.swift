@@ -3,7 +3,7 @@ import Foundation
 
 /// TDOA using GCC (cross-correlation via FFT) with energy-weighted bins
 final class TDOAProcessor: @unchecked Sendable {
-    private let sampleRate: Double
+    let sampleRate: Double
     private let micSpacing: Double
     private let speedOfSound: Double = 343.0
     private let n: Int

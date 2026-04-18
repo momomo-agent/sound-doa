@@ -6,6 +6,8 @@ struct ContentView: View {
     @State private var snapshots: [CaptureMode: CaptureSnapshot] = [:]
     @State private var results: [CaptureMode: DOAResult] = [:]
     @State private var errorMessages: [CaptureMode: String] = [:]
+    @State private var autoTestRunning = false
+    @State private var autoTestPhase: String = ""
 
     private var engines: [CaptureMode: AudioCaptureEngine] = {
         var dict: [CaptureMode: AudioCaptureEngine] = [:]
@@ -32,6 +34,19 @@ struct ContentView: View {
                 .padding(.vertical, 8)
 
                 Divider()
+
+                // Auto test status
+                if autoTestRunning || !autoTestPhase.isEmpty {
+                    HStack {
+                        if autoTestRunning {
+                            ProgressView().scaleEffect(0.8)
+                        }
+                        Text(autoTestPhase)
+                            .font(.caption.bold())
+                            .foregroundStyle(autoTestRunning ? .orange : .green)
+                    }
+                    .padding(.vertical, 4)
+                }
 
                 // Selected mode detail
                 ScrollView {
@@ -77,7 +92,7 @@ struct ContentView: View {
                     }
                 }
             }
-            .onAppear { startAll() }
+            .onAppear { runAutoTest() }
             .onChange(of: selectedTab) { _, newMode in
                 if isRunning { startEngine(for: newMode) }
             }
@@ -85,8 +100,6 @@ struct ContentView: View {
     }
 
     private func startAll() {
-        // Only run one engine at a time (AVAudioSession is shared)
-        // Start selected mode
         startEngine(for: selectedTab)
         isRunning = true
     }
@@ -96,10 +109,10 @@ struct ContentView: View {
             engine.stop()
         }
         isRunning = false
+        autoTestRunning = false
     }
 
     private func startEngine(for mode: CaptureMode) {
-        // Stop all first
         for (_, engine) in engines { engine.stop() }
 
         guard let engine = engines[mode] else { return }
@@ -114,6 +127,42 @@ struct ContentView: View {
         }
         engine.start()
         flog("[SoundDOA] Started engine: \(mode.rawValue)")
+    }
+
+    /// Auto-test: cycle through all modes, 6 seconds each
+    private func runAutoTest() {
+        autoTestRunning = true
+        isRunning = true
+        flog("[SoundDOA] === AUTO TEST START ===")
+
+        Task {
+            for mode in CaptureMode.allCases {
+                await MainActor.run {
+                    selectedTab = mode
+                    autoTestPhase = "Testing \(mode.rawValue)..."
+                    startEngine(for: mode)
+                }
+                flog("[SoundDOA] AUTO TEST: \(mode.rawValue) started, waiting 6s...")
+                try? await Task.sleep(for: .seconds(6))
+
+                // Log summary for this mode
+                await MainActor.run {
+                    if let snap = snapshots[mode] {
+                        flog("[SoundDOA] AUTO TEST RESULT [\(mode.rawValue)]: ch=\(snap.channelCount) sr=\(snap.sampleRate) angle=\(String(format:"%.1f", snap.angle)) lag=\(String(format:"%.1f", snap.lag)) diffRMS=\(String(format:"%.4f", snap.diffRMS)) peak=\(String(format:"%.0f", snap.peakCorr)) ild=\(String(format:"%.2f", snap.ildDB))dB")
+                    } else if let err = errorMessages[mode] {
+                        flog("[SoundDOA] AUTO TEST ERROR [\(mode.rawValue)]: \(err)")
+                    } else {
+                        flog("[SoundDOA] AUTO TEST [\(mode.rawValue)]: no data")
+                    }
+                }
+            }
+
+            await MainActor.run {
+                autoTestPhase = "Done! Check comparison table."
+                autoTestRunning = false
+                flog("[SoundDOA] === AUTO TEST COMPLETE ===")
+            }
+        }
     }
 }
 
