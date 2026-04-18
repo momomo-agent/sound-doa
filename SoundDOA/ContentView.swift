@@ -159,9 +159,13 @@ struct ContentView: View {
                     }
 
                     // Direction indicator
-                    DirectionIndicatorView(result: result)
-                        .frame(width: 260, height: 260)
-                        .padding(.vertical, 10)
+                    HStack {
+                        Spacer()
+                        DirectionIndicatorView(result: result)
+                            .frame(width: 260, height: 260)
+                        Spacer()
+                    }
+                    .padding(.vertical, 10)
 
                     // Angle display
                     VStack(spacing: 4) {
@@ -172,9 +176,11 @@ struct ContentView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    .frame(maxWidth: .infinity)
 
                     // Metrics panel
                     MetricsView(result: result, algorithm: selectedAlgorithm)
+                        .frame(maxWidth: .infinity)
                         .padding(.horizontal)
 
                     // Waveforms
@@ -193,6 +199,7 @@ struct ContentView: View {
                             .font(.caption)
                             .frame(width: 40)
                     }
+                    .frame(maxWidth: .infinity)
                     .padding(.horizontal)
                     .onChange(of: micSpacing) { _, newValue in
                         // Restart with new spacing (recreate processor internally)
