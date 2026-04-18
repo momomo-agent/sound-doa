@@ -13,37 +13,40 @@ final class AudioCapture {
     var onError: ((String) -> Void)?
     var onLevels: (([Float], [Float]) -> Void)?
 
-    private let tdoaProcessor = TDOAProcessor(fftSize: 2048, sampleRate: 16000, micSpacing: 0.10)
-    private let ildProcessor = ILDProcessor(fftSize: 2048, sampleRate: 16000)
     var selectedAlgorithm: DOAAlgorithm = .tdoa
+    private var actualSampleRate: Double = 44100
 
     private var latestLeft: [Float]?
     private var latestRight: [Float]?
+
+    private var tdoaProcessor = TDOAProcessor(fftSize: 2048, sampleRate: 44100, micSpacing: 0.10)
+    private var ildProcessor = ILDProcessor(fftSize: 2048, sampleRate: 44100)
 
     func start() {
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
 
-            // Select stereo input
+            // Try to select stereo input (non-fatal if fails)
             if let inputs = session.availableInputs,
                let port = inputs.first,
                let sources = port.dataSources,
                let front = sources.first(where: { $0.dataSourceName == "Front" }) {
-                try port.setPreferredDataSource(front)
+                try? port.setPreferredDataSource(front)
                 if front.supportedPolarPatterns?.contains(.stereo) == true {
-                    try front.setPreferredPolarPattern(.stereo)
+                    try? front.setPreferredPolarPattern(.stereo)
                 }
             }
 
-            try session.setPreferredSampleRate(16000)
-            try session.setPreferredInputNumberOfChannels(2)
+            // Try stereo channels (non-fatal — device might not support it)
+            try? session.setPreferredInputNumberOfChannels(2)
             try session.setActive(true)
 
             let eng = AVAudioEngine()
             self.engine = eng
             let input = eng.inputNode
             let format = input.inputFormat(forBus: 0)
+            actualSampleRate = format.sampleRate
 
             print("[SoundDOA] Format: \(format.channelCount)ch @ \(format.sampleRate)Hz")
 
@@ -52,7 +55,11 @@ final class AudioCapture {
             }
 
             try eng.start()
-            print("[SoundDOA] Engine started")
+            print("[SoundDOA] Engine started (\(actualSampleRate)Hz, \(format.channelCount)ch)")
+
+            // Create processors with actual device sample rate
+            tdoaProcessor = TDOAProcessor(fftSize: 2048, sampleRate: actualSampleRate, micSpacing: 0.10)
+            ildProcessor = ILDProcessor(fftSize: 2048, sampleRate: Float(actualSampleRate))
 
             timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
                 self?.processBuffer()
