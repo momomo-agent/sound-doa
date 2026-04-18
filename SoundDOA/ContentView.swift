@@ -17,11 +17,10 @@ func flog(_ msg: String) {
     }
 }
 
-// MARK: - Audio Capture (no ObservableObject, pure callback)
+// MARK: - Audio Capture
 
 final class AudioCapture {
     private var engine: AVAudioEngine?
-    private var timer: Timer?
     var onResult: ((DOAResult) -> Void)?
     var onError: ((String) -> Void)?
     var onLevels: (([Float], [Float]) -> Void)?
@@ -31,8 +30,10 @@ final class AudioCapture {
 
     private var latestLeft: [Float]?
     private var latestRight: [Float]?
-    private var angleHistory: [Double] = []
-    private let smoothWindow = 5
+
+    // Smoothing: weighted moving average, only high-energy frames
+    private var angleHistory: [(angle: Double, weight: Double)] = []
+    private let maxHistory = 8
 
     private var tdoaProcessor = TDOAProcessor(fftSize: 2048, sampleRate: 44100, micSpacing: 0.20)
     private var ildProcessor = ILDProcessor(fftSize: 2048, sampleRate: 44100)
@@ -43,12 +44,9 @@ final class AudioCapture {
             try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .mixWithOthers])
             try session.setActive(true)
 
-            // WWDC20 correct order: activate first, then configure polar pattern
             if let inputs = session.availableInputs {
-                flog("[SoundDOA] Available inputs: \(inputs.map { $0.portName })")
                 for port in inputs {
                     if let sources = port.dataSources {
-                        flog("[SoundDOA] DataSources for \(port.portName): \(sources.map { "\($0.dataSourceName) patterns=\($0.supportedPolarPatterns?.map { $0.rawValue } ?? [])" })")
                         for src in sources {
                             if src.supportedPolarPatterns?.contains(.stereo) == true {
                                 try? port.setPreferredDataSource(src)
@@ -60,7 +58,6 @@ final class AudioCapture {
                 }
             }
             try? session.setPreferredInputNumberOfChannels(2)
-            // Re-activate after configuration
             try session.setActive(false)
             try session.setActive(true)
 
@@ -79,20 +76,14 @@ final class AudioCapture {
 
             try eng.start()
             flog("[SoundDOA] Engine started (\(actualSampleRate)Hz, \(format.channelCount)ch)")
-            flog("[SoundDOA] Format details: channels=\(format.channelCount), sampleRate=\(format.sampleRate), isInterleaved=\(format.isInterleaved)")
 
             if format.channelCount < 2 {
                 flog("[SoundDOA] WARNING: Got mono input, TDOA disabled. Using ILD only.")
                 selectedAlgorithm = .ild
-
             }
 
-            // Create processors with actual device sample rate
             tdoaProcessor = TDOAProcessor(fftSize: 2048, sampleRate: actualSampleRate, micSpacing: 0.20)
             ildProcessor = ILDProcessor(fftSize: 2048, sampleRate: Float(actualSampleRate))
-
-
-
         } catch {
             flog("[SoundDOA] Error: \(error)")
             onError?(error.localizedDescription)
@@ -100,180 +91,242 @@ final class AudioCapture {
     }
 
     func stop() {
-        timer?.invalidate()
-        timer = nil
         engine?.inputNode.removeTap(onBus: 0)
         engine?.stop()
         engine = nil
-        try? AVAudioSession.sharedInstance().setActive(false)
-        flog("[SoundDOA] Engine stopped")
     }
 
     private func handleBuffer(_ buffer: AVAudioPCMBuffer) {
+        guard let floatData = buffer.floatChannelData else { return }
         let frames = Int(buffer.frameLength)
-        let channels = Int(buffer.format.channelCount)
-        flog("[SoundDOA] tap: frames=\(frames) ch=\(channels)")
-        guard frames > 0, let ch = buffer.floatChannelData else { return }
+        let ch = Int(buffer.format.channelCount)
+        flog("[SoundDOA] tap: frames=\(frames) ch=\(ch)")
 
-        if channels >= 2 {
-            latestLeft = Array(UnsafeBufferPointer(start: ch[0], count: frames))
-            latestRight = Array(UnsafeBufferPointer(start: ch[1], count: frames))
+        if ch >= 2 {
+            latestLeft = Array(UnsafeBufferPointer(start: floatData[0], count: frames))
+            latestRight = Array(UnsafeBufferPointer(start: floatData[1], count: frames))
         } else {
-            let mono = Array(UnsafeBufferPointer(start: ch[0], count: frames))
-            latestLeft = mono
-            latestRight = mono
+            latestLeft = Array(UnsafeBufferPointer(start: floatData[0], count: frames))
+            latestRight = latestLeft
+        }
+
+        // Send levels for visualization
+        if let l = latestLeft, let r = latestRight {
+            let step = max(1, l.count / 64)
+            let lLevels = stride(from: 0, to: l.count, by: step).map { abs(l[$0]) }
+            let rLevels = stride(from: 0, to: r.count, by: step).map { abs(r[$0]) }
+            onLevels?(lLevels, rLevels)
         }
     }
 
     private func processBuffer() {
-        guard let left = latestLeft, let right = latestRight else {
+        guard let left = latestLeft, let right = latestRight, !left.isEmpty else {
             flog("[SoundDOA] processBuffer: no data")
             return
         }
-        latestLeft = nil
-        latestRight = nil
 
+        // Run both TDOA and ILD
+        let tdoaResult = tdoaProcessor.process(left: left, right: right)
+        let ildResult = ildProcessor.process(left: left, right: right)
+
+        let diffRMS = tdoaResult.metadata["diffRMS"] ?? 0
+        let peakCorr = tdoaResult.metadata["peakCorr"] ?? 0
+
+        // Fusion: use TDOA angle when signal is strong, ILD for front/back disambiguation
         let result: DOAResult
-        switch selectedAlgorithm {
-        case .tdoa:
-            result = tdoaProcessor.process(left: left, right: right)
-        case .ild:
-            result = ildProcessor.process(left: left, right: right)
-        }
-        let lag = result.metadata["delaySamples"] ?? 0
-        let peak = result.metadata["peakCorr"] ?? 0
-        let dRMS = result.metadata["diffRMS"] ?? 0
-        flog("[SoundDOA] gcc: lag=\(lag) peak=\(peak) diffRMS=\(dRMS)")
-        onResult?(result)
-        // Smooth angle over last N high-confidence results
-        if result.confidence > 0.25 && (result.metadata["diffRMS"] ?? 0) > 0.003 {
-            angleHistory.append(result.angle)
-            if angleHistory.count > smoothWindow { angleHistory.removeFirst() }
-            let smoothed = DOAResult(angle: angleHistory.reduce(0,+)/Double(angleHistory.count), confidence: result.confidence, timestamp: result.timestamp, metadata: result.metadata)
-            flog("[SoundDOA] smoothed: angle=\(smoothed.angle) conf=\(smoothed.confidence) raw=\(result.angle)")
+        if diffRMS > 0.001 && peakCorr > 5 {
+            // Signal present: trust TDOA for precise angle
+            result = tdoaResult
+        } else if diffRMS > 0.0005 {
+            // Very weak signal: use ILD
+            result = ildResult
+        } else {
+            // Silence: no update
+            result = DOAResult(angle: 0, confidence: 0, timestamp: .now, metadata: ["silent": 1])
         }
 
-        let blockSize = left.count / 32
-        guard blockSize > 0 else { return }
-        var lLevels = [Float](repeating: 0, count: 32)
-        var rLevels = [Float](repeating: 0, count: 32)
-        for i in 0..<32 {
-            let s = i * blockSize
-            let e = min(s + blockSize, left.count)
-            vDSP_rmsqv(Array(left[s..<e]), 1, &lLevels[i], vDSP_Length(e - s))
-            vDSP_rmsqv(Array(right[s..<e]), 1, &rLevels[i], vDSP_Length(e - s))
+        flog("[SoundDOA] fusion: angle=\(result.angle) conf=\(result.confidence) diffRMS=\(diffRMS) peak=\(peakCorr) algo=\(diffRMS > 0.003 ? "TDOA" : diffRMS > 0.001 ? "ILD" : "silent")")
+
+        // Weighted smoothing: higher energy = more weight
+        if result.confidence > 0.1 && diffRMS > 0.0005 {
+            let weight = diffRMS * result.confidence
+            angleHistory.append((angle: result.angle, weight: weight))
+            if angleHistory.count > maxHistory { angleHistory.removeFirst() }
         }
-        onLevels?(lLevels, rLevels)
+
+        // Compute weighted average
+        let totalWeight = angleHistory.reduce(0.0) { $0 + $1.weight }
+        let smoothedAngle: Double
+        if totalWeight > 0 {
+            smoothedAngle = angleHistory.reduce(0.0) { $0 + $1.angle * $1.weight } / totalWeight
+        } else {
+            smoothedAngle = result.angle
+        }
+
+        let smoothed = DOAResult(
+            angle: smoothedAngle,
+            confidence: result.confidence,
+            timestamp: .now,
+            metadata: result.metadata
+        )
+
+        flog("[SoundDOA] smoothed: angle=\(smoothedAngle) conf=\(result.confidence) raw=\(result.angle)")
+        onResult?(smoothed)
     }
 }
 
-// MARK: - ContentView (all state via @State)
+// MARK: - ContentView
 
 struct ContentView: View {
-    init() { flog("[SoundDOA] ContentView init") }
+    @State private var currentAngle: Double = 0
+    @State private var confidence: Double = 0
     @State private var isRunning = false
-    @State private var selectedAlgorithm: DOAAlgorithm = .tdoa
-    @State private var result: DOAResult = .zero
     @State private var errorMessage: String?
-    @State private var leftLevels: [Float] = Array(repeating: 0, count: 32)
-    @State private var rightLevels: [Float] = Array(repeating: 0, count: 32)
+    @State private var leftLevels: [Float] = []
+    @State private var rightLevels: [Float] = []
+    @State private var selectedAlgorithm: DOAAlgorithm = .tdoa
     @State private var micSpacing: Double = 0.20
 
     private let capture = AudioCapture()
-
-    #if targetEnvironment(simulator)
-    private let isSimulator = true
-    #else
-    private let isSimulator = false
-    #endif
+    private let isSimulator: Bool = {
+        #if targetEnvironment(simulator)
+        return true
+        #else
+        return false
+        #endif
+    }()
 
     private func startRecording() {
         flog("[SoundDOA] startRecording() called")
         capture.selectedAlgorithm = selectedAlgorithm
-        let session = AVAudioSession.sharedInstance()
-        flog("[SoundDOA] permission: \(session.recordPermission.rawValue)")
-        if session.recordPermission == .denied {
-            errorMessage = "麦克风权限被拒绝。到 设置>隐私>麦克风 开启"
-            return
+        capture.onResult = { result in
+            Task { @MainActor in
+                currentAngle = result.angle
+                confidence = result.confidence
+            }
         }
-        errorMessage = nil
-        capture.onResult = { r in Task { @MainActor in result = r } }
-        capture.onLevels = { l, r in Task { @MainActor in leftLevels = l; rightLevels = r } }
-        capture.onError = { msg in Task { @MainActor in errorMessage = msg } }
+        capture.onError = { err in
+            Task { @MainActor in errorMessage = err }
+        }
+        capture.onLevels = { l, r in
+            Task { @MainActor in leftLevels = l; rightLevels = r }
+        }
         capture.start()
         isRunning = true
     }
 
     private func stopRecording() {
-        capture.stop(); isRunning = false; result = .zero
+        capture.stop()
+        isRunning = false
     }
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 20) {
-                    // Algorithm picker
-                    Picker("Algorithm", selection: $selectedAlgorithm) {
-                        ForEach(DOAAlgorithm.allCases, id: \.self) { algo in
-                            Text(algo.rawValue).tag(algo)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .onChange(of: selectedAlgorithm) { _, newValue in
-                        capture.selectedAlgorithm = newValue
-                    }
-
+                VStack(spacing: 24) {
                     // Direction indicator
-                    HStack {
-                        Spacer()
-                        DirectionIndicatorView(result: result)
-                            .frame(width: 260, height: 260)
-                        Spacer()
-                    }
-                    .padding(.vertical, 10)
+                    ZStack {
+                        Circle()
+                            .stroke(Color.gray.opacity(0.3), lineWidth: 2)
+                            .frame(width: 200, height: 200)
 
-                    // Angle display
+                        // Cardinal markers
+                        ForEach([0, 90, 180, 270], id: \.self) { deg in
+                            let rad = Double(deg) * .pi / 180 - .pi/2
+                            Text(["N","E","S","W"][deg/90])
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .offset(x: cos(rad) * 110, y: sin(rad) * 110)
+                        }
+
+                        // Angle arc (shows range)
+                        if confidence > 0.1 {
+                            let startAngle = Angle(degrees: currentAngle - 5)
+                            let endAngle = Angle(degrees: currentAngle + 5)
+                            Path { path in
+                                path.addArc(center: CGPoint(x: 100, y: 100),
+                                           radius: 90,
+                                           startAngle: startAngle - .degrees(90),
+                                           endAngle: endAngle - .degrees(90),
+                                           clockwise: false)
+                            }
+                            .stroke(Color.orange.opacity(0.3), lineWidth: 20)
+                            .frame(width: 200, height: 200)
+                        }
+
+                        // Direction arrow
+                        let arrowAngle = currentAngle * .pi / 180 - .pi/2
+                        let arrowLen = 80.0 * min(1.0, confidence + 0.3)
+                        Path { path in
+                            path.move(to: CGPoint(x: 100, y: 100))
+                            path.addLine(to: CGPoint(
+                                x: 100 + cos(arrowAngle) * arrowLen,
+                                y: 100 + sin(arrowAngle) * arrowLen))
+                        }
+                        .stroke(confidence > 0.3 ? Color.red : Color.red.opacity(0.4), lineWidth: 3)
+                        .frame(width: 200, height: 200)
+
+                        // Center dot
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 8, height: 8)
+                    }
+
+                    // Angle readout
                     VStack(spacing: 4) {
-                        Text("\(Int(result.angle))°")
-                            .font(.system(size: 48, weight: .bold, design: .rounded))
-                            .monospacedDigit()
-                        Text("Confidence \(String(format: "%.0f%%", result.confidence * 100))")
+                        Text(String(format: "%.1f°", currentAngle))
+                            .font(.system(size: 48, weight: .bold, design: .monospaced))
+                        Text(String(format: "Confidence: %.0f%%", confidence * 100))
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        Text(directionLabel(for: currentAngle))
+                            .font(.headline)
+                            .foregroundStyle(.blue)
                     }
-                    .frame(maxWidth: .infinity)
 
-                    // Metrics panel
-                    MetricsView(result: result, algorithm: selectedAlgorithm)
-                        .frame(maxWidth: .infinity)
+                    // Waveform
+                    if !leftLevels.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("L/R Waveform")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            HStack(spacing: 0) {
+                                ForEach(0..<min(leftLevels.count, rightLevels.count), id: \.self) { i in
+                                    VStack(spacing: 0) {
+                                        Rectangle()
+                                            .fill(Color.blue.opacity(0.6))
+                                            .frame(width: 3, height: CGFloat(leftLevels[i]) * 100)
+                                        Rectangle()
+                                            .fill(Color.green.opacity(0.6))
+                                            .frame(width: 3, height: CGFloat(rightLevels[i]) * 100)
+                                    }
+                                }
+                            }
+                            .frame(height: 60)
+                            .clipped()
+                        }
                         .padding(.horizontal)
-
-                    // Waveforms
-                    VStack(alignment: .leading, spacing: 8) {
-                        WaveformView(levels: leftLevels, label: "Left", color: .blue)
-                        WaveformView(levels: rightLevels, label: "Right", color: .orange)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal)
 
-                    // Mic spacing slider
-                    HStack {
-                        Text("Mic spacing")
-                        Slider(value: $micSpacing, in: 0.02...0.20, step: 0.01)
-                        Text("\(String(format: "%.0f", micSpacing * 100))cm")
-                            .font(.caption)
-                            .frame(width: 40)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.horizontal)
-                    .onChange(of: micSpacing) { _, newValue in
-                        // Restart with new spacing (recreate processor internally)
-                        if isRunning {
-                            capture.stop()
-                            isRunning = false
-                            // Note: spacing change needs processor recreation, simplified for now
+                    // Controls
+                    VStack(spacing: 12) {
+                        Picker("Algorithm", selection: $selectedAlgorithm) {
+                            ForEach(DOAAlgorithm.allCases, id: \.self) { algo in
+                                Text(algo.rawValue).tag(algo)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .onChange(of: selectedAlgorithm) { _, newValue in
+                            capture.selectedAlgorithm = newValue
+                        }
+
+                        HStack {
+                            Text("Virtual Spacing")
+                            Slider(value: $micSpacing, in: 0.05...0.40, step: 0.01)
+                            Text("\(String(format: "%.0f", micSpacing * 100))cm")
                         }
                     }
+                    .padding(.horizontal)
 
                     if let err = errorMessage, !isSimulator {
                         Text(err)
@@ -288,18 +341,12 @@ struct ContentView: View {
             .navigationTitle("Sound DOA")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    if isSimulator {
-                        Label("Demo", systemImage: "waveform.circle.fill")
-                            .font(.subheadline.bold())
-                            .foregroundStyle(.orange)
-                    } else {
-                        Button {
-                            if isRunning { stopRecording() } else { startRecording() }
-                        } label: {
-                            Image(systemName: isRunning ? "stop.circle.fill" : "play.circle.fill")
-                                .font(.title2)
-                                .foregroundStyle(isRunning ? .red : .green)
-                        }
+                    Button {
+                        if isRunning { stopRecording() } else { startRecording() }
+                    } label: {
+                        Image(systemName: isRunning ? "stop.circle.fill" : "play.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(isRunning ? .red : .green)
                     }
                 }
             }
@@ -308,6 +355,21 @@ struct ContentView: View {
                     startRecording()
                 }
             }
+        }
+    }
+
+    private func directionLabel(for angle: Double) -> String {
+        let a = ((angle.truncatingRemainder(dividingBy: 360)) + 360).truncatingRemainder(dividingBy: 360)
+        switch a {
+        case 337.5...360, 0..<22.5: return "Front"
+        case 22.5..<67.5: return "Front-Right"
+        case 67.5..<112.5: return "Right"
+        case 112.5..<157.5: return "Back-Right"
+        case 157.5..<202.5: return "Back"
+        case 202.5..<247.5: return "Back-Left"
+        case 247.5..<292.5: return "Left"
+        case 292.5..<337.5: return "Front-Left"
+        default: return ""
         }
     }
 }
