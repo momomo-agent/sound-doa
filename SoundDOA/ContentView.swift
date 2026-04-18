@@ -4,6 +4,19 @@ import Combine
 import Foundation
 import SwiftUI
 
+// MARK: - File Logger
+func flog(_ msg: String) {
+    let line = "\(Date()) \(msg)\n"
+    let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("sounddoa.log")
+    if let data = line.data(using: .utf8) {
+        if FileManager.default.fileExists(atPath: url.path) {
+            if let fh = try? FileHandle(forWritingTo: url) { fh.seekToEndOfFile(); fh.write(data); try? fh.close() }
+        } else {
+            try? data.write(to: url)
+        }
+    }
+}
+
 // MARK: - Audio Capture (no ObservableObject, pure callback)
 
 final class AudioCapture {
@@ -26,20 +39,27 @@ final class AudioCapture {
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
+            try session.setActive(true)
 
-            // Try to select stereo input (non-fatal if fails)
-            if let inputs = session.availableInputs,
-               let port = inputs.first,
-               let sources = port.dataSources,
-               let front = sources.first(where: { $0.dataSourceName == "Front" }) {
-                try? port.setPreferredDataSource(front)
-                if front.supportedPolarPatterns?.contains(.stereo) == true {
-                    try? front.setPreferredPolarPattern(.stereo)
+            // WWDC20 correct order: activate first, then configure polar pattern
+            if let inputs = session.availableInputs {
+                flog("[SoundDOA] Available inputs: \(inputs.map { $0.portName })")
+                for port in inputs {
+                    if let sources = port.dataSources {
+                        flog("[SoundDOA] DataSources for \(port.portName): \(sources.map { "\($0.dataSourceName) patterns=\($0.supportedPolarPatterns?.map { $0.rawValue } ?? [])" })")
+                        for src in sources {
+                            if src.supportedPolarPatterns?.contains(.stereo) == true {
+                                try? port.setPreferredDataSource(src)
+                                try? src.setPreferredPolarPattern(.stereo)
+                                flog("[SoundDOA] Set stereo polar pattern on \(src.dataSourceName)")
+                            }
+                        }
+                    }
                 }
             }
-
-            // Try stereo channels (non-fatal — device might not support it)
             try? session.setPreferredInputNumberOfChannels(2)
+            // Re-activate after configuration
+            try session.setActive(false)
             try session.setActive(true)
 
             let eng = AVAudioEngine()
@@ -48,20 +68,20 @@ final class AudioCapture {
             let format = input.inputFormat(forBus: 0)
             actualSampleRate = format.sampleRate
 
-            print("[SoundDOA] Format: \(format.channelCount)ch @ \(format.sampleRate)Hz")
+            flog("[SoundDOA] Format: \(format.channelCount)ch @ \(format.sampleRate)Hz")
 
             input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
                 self?.handleBuffer(buffer)
             }
 
             try eng.start()
-            print("[SoundDOA] Engine started (\(actualSampleRate)Hz, \(format.channelCount)ch)")
-            print("[SoundDOA] Format details: channels=\(format.channelCount), sampleRate=\(format.sampleRate), isInterleaved=\(format.isInterleaved)")
+            flog("[SoundDOA] Engine started (\(actualSampleRate)Hz, \(format.channelCount)ch)")
+            flog("[SoundDOA] Format details: channels=\(format.channelCount), sampleRate=\(format.sampleRate), isInterleaved=\(format.isInterleaved)")
 
             if format.channelCount < 2 {
-                print("[SoundDOA] WARNING: Got mono input, TDOA will not work. Attempting to force stereo...")
-                // Try requesting stereo again
-                try? session.setPreferredInputNumberOfChannels(2)
+                flog("[SoundDOA] WARNING: Got mono input, TDOA disabled. Using ILD only.")
+                selectedAlgorithm = .ild
+
             }
 
             // Create processors with actual device sample rate
@@ -73,7 +93,7 @@ final class AudioCapture {
             }
 
         } catch {
-            print("[SoundDOA] Error: \(error)")
+            flog("[SoundDOA] Error: \(error)")
             onError?(error.localizedDescription)
         }
     }
@@ -85,7 +105,7 @@ final class AudioCapture {
         engine?.stop()
         engine = nil
         try? AVAudioSession.sharedInstance().setActive(false)
-        print("[SoundDOA] Engine stopped")
+        flog("[SoundDOA] Engine stopped")
     }
 
     private func handleBuffer(_ buffer: AVAudioPCMBuffer) {
@@ -116,6 +136,7 @@ final class AudioCapture {
             result = ildProcessor.process(left: left, right: right)
         }
         onResult?(result)
+        flog("[SoundDOA] result: angle=\(result.angle) conf=\(result.confidence) meta=\(result.metadata)")
 
         let blockSize = left.count / 32
         guard blockSize > 0 else { return }
@@ -134,6 +155,7 @@ final class AudioCapture {
 // MARK: - ContentView (all state via @State)
 
 struct ContentView: View {
+    init() { flog("[SoundDOA] ContentView init") }
     @State private var isRunning = false
     @State private var selectedAlgorithm: DOAAlgorithm = .tdoa
     @State private var result: DOAResult = .zero
@@ -151,9 +173,9 @@ struct ContentView: View {
     #endif
 
     private func startRecording() {
-        print("[SoundDOA] startRecording() called")
+        flog("[SoundDOA] startRecording() called")
         let session = AVAudioSession.sharedInstance()
-        print("[SoundDOA] permission: \(session.recordPermission.rawValue)")
+        flog("[SoundDOA] permission: \(session.recordPermission.rawValue)")
         if session.recordPermission == .denied {
             errorMessage = "麦克风权限被拒绝。到 设置>隐私>麦克风 开启"
             return
