@@ -150,6 +150,26 @@ struct ContentView: View {
     private let isSimulator = false
     #endif
 
+    private func startRecording() {
+        print("[SoundDOA] startRecording() called")
+        let session = AVAudioSession.sharedInstance()
+        print("[SoundDOA] permission: \(session.recordPermission.rawValue)")
+        if session.recordPermission == .denied {
+            errorMessage = "麦克风权限被拒绝。到 设置>隐私>麦克风 开启"
+            return
+        }
+        errorMessage = nil
+        capture.onResult = { r in Task { @MainActor in result = r } }
+        capture.onLevels = { l, r in Task { @MainActor in leftLevels = l; rightLevels = r } }
+        capture.onError = { msg in Task { @MainActor in errorMessage = msg } }
+        capture.start()
+        isRunning = true
+    }
+
+    private func stopRecording() {
+        capture.stop(); isRunning = false; result = .zero
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -236,38 +256,18 @@ struct ContentView: View {
                             .foregroundStyle(.orange)
                     } else {
                         Button {
-                            print("[SoundDOA] Button tapped! isRunning=\(isRunning)")
-                            if isRunning {
-                                capture.stop()
-                                isRunning = false
-                                result = .zero
-                            } else {
-                                errorMessage = nil
-                                capture.onResult = { r in
-                                    Task { @MainActor in
-                                        result = r
-                                    }
-                                }
-                                capture.onLevels = { l, r in
-                                    Task { @MainActor in
-                                        leftLevels = l
-                                        rightLevels = r
-                                    }
-                                }
-                                capture.onError = { msg in
-                                    Task { @MainActor in
-                                        errorMessage = msg
-                                    }
-                                }
-                                capture.start()
-                                isRunning = true
-                            }
+                            if isRunning { stopRecording() } else { startRecording() }
                         } label: {
                             Image(systemName: isRunning ? "stop.circle.fill" : "play.circle.fill")
                                 .font(.title2)
                                 .foregroundStyle(isRunning ? .red : .green)
                         }
                     }
+                }
+            }
+            .onAppear {
+                if !isRunning && !isSimulator {
+                    startRecording()
                 }
             }
         }
