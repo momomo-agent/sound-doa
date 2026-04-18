@@ -154,7 +154,6 @@ struct ContentView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    .padding(.horizontal)
                     .onChange(of: selectedAlgorithm) { _, newValue in
                         capture.selectedAlgorithm = newValue
                     }
@@ -183,6 +182,7 @@ struct ContentView: View {
                         WaveformView(levels: leftLevels, label: "Left", color: .blue)
                         WaveformView(levels: rightLevels, label: "Right", color: .orange)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal)
 
                     // Mic spacing slider
@@ -211,6 +211,7 @@ struct ContentView: View {
                     }
                 }
                 .padding(.vertical)
+                .frame(maxWidth: .infinity)
             }
             .navigationTitle("Sound DOA")
             .toolbar {

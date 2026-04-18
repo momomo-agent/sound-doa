@@ -1,68 +1,61 @@
 import Accelerate
 import Foundation
 
-/// ILD (Interaural Level Difference) processor
+/// ILD processor using time-domain bandpass filtering + RMS
+/// More reliable than FFT-based frequency-domain approach
 final class ILDProcessor: @unchecked Sendable {
-    let fftSize: Int
     let sampleRate: Float
-    private let halfN: Int
 
-    private let fftSetup: vDSP_DFT_Setup
-    private let windowPtr: UnsafeMutablePointer<Float>
-    private let zerosInputImag: UnsafeMutablePointer<Float>
+    // Simple 2nd-order IIR bandpass filter coefficients
+    struct BandPass {
+        let b0, b1, b2, a1, a2: Float
+        var x1: Float = 0, x2: Float = 0
+        var y1: Float = 0, y2: Float = 0
+
+        init(lowHz: Float, highHz: Float, fs: Float) {
+            let fl = lowHz / fs
+            let fh = highHz / fs
+            let center = sqrt(fl * fh)
+            let bw = fh - fl
+            let r = 1 - 3 * bw
+            let cosVal = cos(2 * .pi * center)
+            let k = (1 - 2 * r * cosVal + r * r) / (2 * (1 - r * cosVal))
+            a1 = 2 * r * cosVal
+            a2 = -r * r
+            b0 = 1 - k
+            b1 = 2 * (k - r) * cosVal
+            b2 = r * r - k
+        }
+
+        mutating func process(_ input: [Float]) -> [Float] {
+            var output = [Float](repeating: 0, count: input.count)
+            for i in 0..<input.count {
+                let x0 = input[i]
+                let y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+                x2 = x1; x1 = x0
+                y2 = y1; y1 = y0
+                output[i] = y0
+            }
+            return output
+        }
+    }
 
     static let bandNames = ["Low 0-500Hz", "Mid 500-2kHz", "High 2-8kHz"]
     static let bandLimits: [(low: Float, high: Float)] = [
-        (0, 500),
+        (100, 500),
         (500, 2000),
         (2000, 8000)
     ]
 
-    init(fftSize: Int = 2048, sampleRate: Float = 16000) {
-        self.fftSize = fftSize
+    init(fftSize: Int = 2048, sampleRate: Float = 44100) {
         self.sampleRate = sampleRate
-        self.halfN = fftSize / 2 + 1
-
-        self.fftSetup = vDSP_DFT_zrop_CreateSetup(nil, vDSP_Length(fftSize), .FORWARD)!
-
-        self.windowPtr = UnsafeMutablePointer<Float>.allocate(capacity: fftSize)
-        vDSP_hann_window(windowPtr, vDSP_Length(fftSize), Int32(vDSP_HANN_NORM))
-
-        self.zerosInputImag = UnsafeMutablePointer<Float>.allocate(capacity: fftSize)
-        zerosInputImag.initialize(repeating: 0, count: fftSize)
-    }
-
-    deinit {
-        vDSP_DFT_DestroySetup(fftSetup)
-        windowPtr.deallocate()
-        zerosInputImag.deallocate()
     }
 
     func process(left: [Float], right: [Float]) -> DOAResult {
-        let n = min(left.count, right.count, fftSize)
+        let n = min(left.count, right.count)
 
-        // Copy and window
-        var lBuf = [Float](repeating: 0, count: fftSize)
-        var rBuf = [Float](repeating: 0, count: fftSize)
-        lBuf.replaceSubrange(0..<n, with: left[0..<n])
-        rBuf.replaceSubrange(0..<n, with: right[0..<n])
-        vDSP_vmul(lBuf, 1, windowPtr, 1, &lBuf, 1, vDSP_Length(fftSize))
-        vDSP_vmul(rBuf, 1, windowPtr, 1, &rBuf, 1, vDSP_Length(fftSize))
-
-        // FFT left: vDSP_DFT_Execute(setup, inputReal, inputImag, outputReal, outputImag)
-        var lRealOut = [Float](repeating: 0, count: halfN)
-        var lImagOut = [Float](repeating: 0, count: halfN)
-        vDSP_DFT_Execute(fftSetup, &lBuf, zerosInputImag, &lRealOut, &lImagOut)
-
-        // FFT right
-        let fftSetupR = vDSP_DFT_zrop_CreateSetup(nil, vDSP_Length(fftSize), .FORWARD)!
-        var rRealOut = [Float](repeating: 0, count: halfN)
-        var rImagOut = [Float](repeating: 0, count: halfN)
-        vDSP_DFT_Execute(fftSetupR, &rBuf, zerosInputImag, &rRealOut, &rImagOut)
-
-        // Overall time-domain RMS ILD
-        var rmsL: Float = 0
-        var rmsR: Float = 0
+        // Overall RMS ILD
+        var rmsL: Float = 0, rmsR: Float = 0
         vDSP_rmsqv(left, 1, &rmsL, vDSP_Length(n))
         vDSP_rmsqv(right, 1, &rmsR, vDSP_Length(n))
 
@@ -73,33 +66,28 @@ final class ILDProcessor: @unchecked Sendable {
             ildOverall = 0
         }
 
-        // Per-band ILD from frequency domain
-        let binWidth = sampleRate / Float(fftSize)
+        // Per-band ILD using time-domain bandpass
         var bandILDs: [Float] = []
 
         for band in Self.bandLimits {
-            let binStart = max(1, Int(band.low / binWidth))
-            let binEnd = min(halfN - 1, Int(band.high / binWidth))
-            let count = max(1, binEnd - binStart)
+            var filterL = BandPass(lowHz: band.low, highHz: band.high, fs: sampleRate)
+            var filterR = BandPass(lowHz: band.low, highHz: band.high, fs: sampleRate)
 
-            var eL: Float = 0
-            var eR: Float = 0
-            for b in binStart..<binEnd {
-                eL += lRealOut[b] * lRealOut[b] + lImagOut[b] * lImagOut[b]
-                eR += rRealOut[b] * rRealOut[b] + rImagOut[b] * rImagOut[b]
-            }
+            let filteredL = filterL.process(left)
+            let filteredR = filterR.process(right)
 
-            let avgEL = eL / Float(count)
-            let avgER = eR / Float(count)
+            var eL: Float = 0, eR: Float = 0
+            vDSP_rmsqv(filteredL, 1, &eL, vDSP_Length(n))
+            vDSP_rmsqv(filteredR, 1, &eR, vDSP_Length(n))
 
-            if avgEL > 1e-12 && avgER > 1e-12 {
-                bandILDs.append(10.0 * log10f(avgEL / avgER))
+            if eL > 1e-12 && eR > 1e-12 {
+                bandILDs.append(20.0 * log10f(eL / eR))
             } else {
                 bandILDs.append(0)
             }
         }
 
-        // Weighted angle: high-freq ILD more directional
+        // Weighted angle: high-freq ILD more directional (phone body shadowing)
         let weights: [Float] = [1, 2, 4]
         var weightedILD: Float = 0
         var totalWeight: Float = 0
@@ -116,18 +104,11 @@ final class ILDProcessor: @unchecked Sendable {
         let maxRms = max(rmsL, rmsR)
         let confidence = min(1.0, Double(maxRms) * 20.0)
 
-        var metadata: [String: Double] = [
-            "ildOverall": Double(ildOverall),
-        ]
+        var metadata: [String: Double] = ["ildOverall": Double(ildOverall)]
         for (i, ild) in bandILDs.enumerated() {
             metadata["ildBand\(i)"] = Double(ild)
         }
 
-        return DOAResult(
-            angle: angle,
-            confidence: confidence,
-            timestamp: .now,
-            metadata: metadata
-        )
+        return DOAResult(angle: angle, confidence: confidence, timestamp: .now, metadata: metadata)
     }
 }
